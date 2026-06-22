@@ -1,131 +1,126 @@
-# UbidStay Price Intelligence — Streamlit Deployment
+# UbidStay — Hotel Price Intelligence Platform
 
-A self-contained, in-process build of the UbidStay Hotel Price Intelligence
-platform, ready for deployment on **Streamlit Community Cloud**. The
-dashboard no longer talks to a separate FastAPI server over HTTP — every
-data operation runs as a direct, in-process Python function call against
-the same business logic that previously sat behind `uvicorn`.
+A multi-vendor hotel price intelligence system built for Travelomatix /
+Ubidtours. It searches multiple hotel suppliers live, in parallel, and
+turns the results into a single, decision-ready view: who is cheapest
+right now, where prices are headed, and when to buy.
 
----
-
-## 1. What changed
-
-| Area | Before | After |
-|---|---|---|
-| Data access | `ui.py` called a FastAPI server over HTTP (`requests.get/post/delete`) | `ui.py` calls plain Python functions in `backend.py`, which invoke the same endpoint logic directly, in-process |
-| Deployment | Required two running processes (FastAPI + Streamlit) | Single process — Streamlit only |
-| Credentials | `.env` file | Streamlit **Secrets** (mapped to environment variables at startup) |
-| Access control | None | Password gate (fail-closed — the app will not load without a configured password) |
-| Debug output | A "Raw API response (JSON)" panel exposed the full raw response | Removed; the existing "Download full response (JSON)" export button is retained |
-
-No other part of the dashboard — layout, styling, charts, tabs, copy — has
-been modified. The visual product is identical to the original.
+There is no demo, mock, or synthetic data anywhere in the system — every
+number shown comes from a live vendor API call made at search time.
 
 ---
 
-## 2. Project structure
+## Core Functionality
 
-```
-.
-├── ui.py                        # Streamlit dashboard (entry point)
-├── backend.py                   # In-process bridge: calls the FastAPI endpoint
-│                                 # functions directly — no HTTP, no localhost
-├── app/                         # Original FastAPI service (unchanged)
-│   ├── agents/                  # Orchestration, matching, timeline, AI recommendation
-│   ├── api/v1/endpoints/        # Endpoint logic — now called directly by backend.py
-│   ├── core/config/             # Settings (env-var driven)
-│   ├── providers/                # Vendor adapters (SerpAPI, Booking.com, Expedia,
-│   │                              # HotelBeds, Amadeus, Travelomatix)
-│   ├── schemas/                 # Pydantic request/response models
-│   └── services/                # SQLite history store, watchlist monitor, geocoding
-├── requirements.txt
-├── .streamlit/
-│   └── secrets.toml.example     # Template — copy and fill in real values
-└── .gitignore
-```
+### 1. Multi-Vendor Live Search
+Queries the following suppliers simultaneously for the same destination
+and dates:
+- SerpAPI (Google Hotels)
+- Booking.com
+- Expedia / Hotels.com
+- HotelBeds
+- Amadeus
+- Travelomatix
 
----
+Each vendor's full hotel list and rates are shown independently. A vendor
+without valid credentials is clearly reported as **not configured** rather
+than silently skipped or faked.
 
-## 3. Deploying to Streamlit Community Cloud
+### 2. Cross-Vendor Price Comparison
+The same physical property is matched across vendors by name/address
+similarity, surfacing:
+- Cheapest vendor for that hotel
+- Most expensive vendor for that hotel
+- Price spread (absolute and percentage)
 
-1. **Push this folder to a GitHub repository** (the full tree above,
-   including `app/`).
-2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**.
-3. Select the repository and branch, and set:
-   - **Main file path:** `ui.py`
-4. Before (or right after) deploying, open **App settings → Secrets** and
-   paste in your configuration — see [Section 4](#4-configuration--secrets)
-   below. At minimum, `APP_PASSWORD` must be set, or the app will refuse to
-   start.
-5. Save. The app will restart automatically and prompt for the password on
-   first load.
+### 3. Live Price Timeline (Forward Prediction)
+Re-queries the fastest vendors at future check-in windows
+(+7 / +14 / +30 / +60 / +90 days) to build a real, live forward price
+curve — not a static seasonal model. From this the system derives:
+- Overall trend (rising / falling / stable)
+- The cheapest scanned window and potential saving vs. the requested dates
 
----
+### 4. AI Booking Recommendation
+Produces a clear **BOOK_NOW / WAIT / MONITOR** decision with supporting
+analysis, confidence score, best vendor, and timing guidance.
+- Uses GPT-4o for the narrative when an OpenAI key is configured
+- Falls back to a deterministic, rule-based engine (using the same live
+  numbers) when it isn't — the recommendation logic never invents data
 
-## 4. Configuration / Secrets
+### 5. Price History
+Every search is recorded to a local store. From this, the platform shows:
+- Market price trend per destination over time
+- Per-vendor average price trend
+- Price history for a specific named hotel
 
-All configuration is supplied via Streamlit Secrets (or, for local
-development, a `.streamlit/secrets.toml` file). Copy
-`.streamlit/secrets.toml.example` as a starting point.
+### 6. Watchlist & Monitoring
+Save a destination (or a specific hotel) with target dates and an optional
+target price. The system can re-scan any saved watch on demand and will
+flag:
+- A price drop beyond a configured threshold
+- The target price being reached
 
-| Key | Required | Purpose |
-|---|---|---|
-| `APP_PASSWORD` | **Yes** | Gates access to the dashboard. The app will not load without this set. |
-| `OPENAI_API_KEY` | No | Enables GPT-4o-generated booking recommendations. Without it, a deterministic, rule-based recommendation engine is used instead. |
-| `SERPAPI_API_KEY` | No | Google Hotels via SerpAPI |
-| `BOOKINGCOM_RAPIDAPI_KEY` | No | Booking.com via RapidAPI |
-| `EXPEDIA_RAPIDAPI_KEY` | No | Expedia / Hotels.com via RapidAPI |
-| `RAPIDAPI_KEY` | No | Shared fallback key for the two RapidAPI vendors above |
-| `HOTELBEDS_API_KEY` / `HOTELBEDS_API_SECRET` | No | HotelBeds |
-| `AMADEUS_CLIENT_ID` / `AMADEUS_CLIENT_SECRET` | No | Amadeus |
-| `TRAVELOMATIX_USER_ID` / `TRAVELOMATIX_USER_PASSWORD` / `TRAVELOMATIX_ACCESS` | No | Travelomatix |
-| `HISTORY_ENABLED` | No (default `true`) | Enables the SQLite price-history store |
-| `TIMELINE_ENABLED` | No (default `true`) | Enables the live future-date price scan |
+### 7. Vendor Performance Analytics
+Computed entirely from accumulated search history:
+- Win rate — how often each vendor is the cheapest for a matched property
+- Success rate — live calls that actually returned data
+- Average response time and average hotels returned
+- Average saving versus the most expensive vendor for the same hotel
 
-Any vendor left unconfigured is reported as `not_configured` in the
-dashboard and skipped — there is no demo or mock data fallback anywhere in
-this system, consistent with the original design.
+### 8. Access Control
+The dashboard is gated behind a password. Without a configured password,
+the application does not load — there is no default "open" state.
 
----
-
-## 5. Local development
-
-```bash
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# edit .streamlit/secrets.toml with real values
-
-pip install -r requirements.txt
-streamlit run ui.py
-```
+### 9. Umrah / Hajj & General Travel Package Support
+Search supports a generic accommodation type filter (hotel, apartment,
+resort, vacation rental), budget cap, minimum star rating, minimum guest
+rating, and search radius — applicable to both leisure and religious
+travel itineraries.
 
 ---
 
-## 6. Known limitation — Watchlist auto-monitoring
+## Search Modes
 
-The original FastAPI service ran a background `asyncio` task that
-re-scanned active watches automatically on a fixed interval
-(`MONITOR_INTERVAL_MINUTES`). Streamlit's execution model does not support
-a persistent background process of this kind, so the **automatic**
-schedule does not run in this build.
+| Mode | Purpose |
+|---|---|
+| **Search** | Run a live multi-vendor price intelligence search |
+| **History** | Review recorded price trends by destination or hotel |
+| **Watchlist** | Manage saved watches and run on-demand scans |
+| **Vendor Analytics** | Compare supplier performance over time |
 
-Manual scanning is fully supported and unaffected:
-- **Run now** — scans a single watch on demand
-- **Run ALL active watches now** — scans every active watch on demand
+## Search Result Views
 
-All resulting runs are still recorded to history and reflected in Vendor
-Analytics exactly as before. If a truly scheduled scan is required, it
-should be run as an external trigger (e.g. a scheduled GitHub Action or
-cron job) against a small script that imports and calls
-`backend.watchlist_run_all()`.
+| Tab | Content |
+|---|---|
+| **Vendor Results** | Each supplier's raw hotel list and rates |
+| **Price Comparison** | Same-hotel, cross-vendor price matchup |
+| **Seasonal Analysis** | Live forward price curve and booking windows |
+| **AI Intelligence** | The booking recommendation and full reasoning |
+| **Market Overview** | Aggregated pricing statistics across all vendors |
 
 ---
 
-## 7. Security notes
+## Tech Stack
 
-- The password gate fails **closed**: if `APP_PASSWORD` is not set in
-  Secrets, the app displays a configuration notice and refuses to render
-  any content.
-- Secrets are read once at process start and copied into the process
-  environment; they are never displayed in the UI or written to disk.
-- `.streamlit/secrets.toml` is excluded via `.gitignore` and must never be
-  committed to version control.
+- **Backend logic:** Python, FastAPI-style service layer, Pydantic
+- **Dashboard:** Streamlit
+- **Vendor integrations:** HTTPX-based adapters per supplier
+  (OAuth2 / API key / RapidAPI as required by each vendor)
+- **AI recommendation:** OpenAI (GPT-4o), with a deterministic fallback
+- **Storage:** SQLite — price history, watchlist, and run records
+- **Charts:** Plotly
+
+---
+
+## Reliability Contract
+
+Every vendor call follows the same strict rule, with no exceptions:
+
+| Outcome | Behaviour |
+|---|---|
+| Credentials missing | Reported as `not_configured` — vendor excluded |
+| Live call succeeds | Real data returned |
+| Live call returns nothing | Reported as `no_results` |
+| Live call fails | Reported as `api_error` with the real error message |
+
+There is no fallback to demo or placeholder data at any stage.
